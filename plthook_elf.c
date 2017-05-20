@@ -83,16 +83,20 @@
 #else
 #define R_JUMP_SLOT   R_X86_64_JMP_SLOT
 #endif
+#define R_GLOBAL_DATA R_X86_64_GLOB_DAT
 #define SHT_PLT_REL   SHT_RELA
 #define Elf_Plt_Rel   Elf_Rela
 #define PLT_SECTION_NAME ".rela.plt"
+#define PLT_SECTION_NAME_FALLBACK ".rela.dyn"
 #elif defined __i386__ || defined __i386
 #define ELF_DATA      ELFDATA2LSB
 #define E_MACHINE     EM_386
 #define R_JUMP_SLOT   R_386_JMP_SLOT
+#define R_GLOBAL_DATA R_386_GLOB_DAT
 #define SHT_PLT_REL   SHT_REL
 #define Elf_Plt_Rel   Elf_Rel
 #define PLT_SECTION_NAME ".rel.plt"
+#define PLT_SECTION_NAME_FALLBACK ".rel.dyn"
 #else
 #error E_MACHINE is not defined.
 #endif
@@ -423,7 +427,15 @@ static int plthook_open_real(plthook_t **plthook_out, const char *base, const ch
 
     rv = find_section(plthook, PLT_SECTION_NAME, &shdr);
     if (rv != 0) {
-        goto error_exit;
+        /*
+         * Full RELRO with PIE results in GCC emitting no jump slots into .rel[a].plt,
+         * but instead this section is not emitted at all and global data relocations
+         * are generated for all PLT entries into .rel[a].dyn.
+         */
+        rv = find_section(plthook, PLT_SECTION_NAME_FALLBACK, &shdr);
+        if (rv != 0) {
+            goto error_exit;
+        }
     }
     if (shdr->sh_entsize != sizeof(Elf_Plt_Rel)) {
         set_errmsg("invalid " PLT_SECTION_NAME " table entry size: %" SIZE_T_FMT, shdr->sh_entsize);
@@ -447,7 +459,7 @@ int plthook_enum(plthook_t *plthook, unsigned int *pos, const char **name_out, v
 {
     while (*pos < plthook->plt_cnt) {
         const Elf_Plt_Rel *plt = plthook->plt + *pos;
-        if (ELF_R_TYPE(plt->r_info) == R_JUMP_SLOT) {
+        if (ELF_R_TYPE(plt->r_info) == R_JUMP_SLOT || ELF_R_TYPE(plt->r_info) == R_GLOBAL_DATA) {
             size_t idx = ELF_R_SYM(plt->r_info);
 
             if (idx >= plthook->dynsym_cnt) {
