@@ -155,6 +155,10 @@ struct plthook {
     size_t dynstr_size;
     const Elf_Plt_Rel *plt;
     size_t plt_cnt;
+    const Elf_Plt_Rel *dyn;
+    size_t dyn_cnt;
+    const intptr_t *pltgot;
+    size_t pltgot_cnt;
 #ifdef PT_GNU_RELRO
     const char *relro_start;
     const char *relro_end;
@@ -418,12 +422,24 @@ static int plthook_open_real(plthook_t **plthook_out, const char *base, const ch
         goto error_exit;
     }
     if (shdr->sh_type != SHT_STRTAB) {
-        set_errmsg("The type of .dynstrx section should be SHT_STRTAB but %d.", shdr->sh_type);
+        set_errmsg("The type of .dynstr section should be SHT_STRTAB but %d.", shdr->sh_type);
         rv = PLTHOOK_INVALID_FILE_FORMAT;
         goto error_exit;
     }
     plthook->dynstr = (const char*)(plthook->base + shdr->sh_addr);
     plthook->dynstr_size = shdr->sh_size;
+
+    rv = find_section(plthook, ".plt.got", &shdr);
+    if (rv != 0) {
+        goto error_exit;
+    }
+    if ((shdr->sh_size & 7) != 0) {
+        set_errmsg("invalid .plt.got table size: %" SIZE_T_FMT, shdr->sh_size);
+        rv = PLTHOOK_INVALID_FILE_FORMAT;
+        goto error_exit;
+    }
+    plthook->pltgot = (const char*)(plthook->base + shdr->sh_addr);
+    plthook->pltgot_cnt = shdr->sh_size / sizeof(intptr_t);
 
     rv = find_section(plthook, PLT_SECTION_NAME, &shdr);
     if (rv != 0) {
@@ -432,18 +448,29 @@ static int plthook_open_real(plthook_t **plthook_out, const char *base, const ch
          * but instead this section is not emitted at all and global data relocations
          * are generated for all PLT entries into .rel[a].dyn.
          */
-        rv = find_section(plthook, PLT_SECTION_NAME_FALLBACK, &shdr);
-        if (rv != 0) {
+        plthook->plt = NULL;
+        plthook->plt_cnt = 0;
+    } else {
+        if (shdr->sh_entsize != sizeof(Elf_Plt_Rel)) {
+            set_errmsg("invalid " PLT_SECTION_NAME " table entry size: %" SIZE_T_FMT, shdr->sh_entsize);
+            rv = PLTHOOK_INVALID_FILE_FORMAT;
             goto error_exit;
         }
+        plthook->plt = (Elf_Plt_Rel *)(plthook->base + shdr->sh_addr);
+        plthook->plt_cnt = shdr->sh_size / sizeof(Elf_Plt_Rel);
+    }
+
+    rv = find_section(plthook, PLT_SECTION_NAME_FALLBACK, &shdr);
+    if (rv != 0) {
+        goto error_exit;
     }
     if (shdr->sh_entsize != sizeof(Elf_Plt_Rel)) {
-        set_errmsg("invalid " PLT_SECTION_NAME " table entry size: %" SIZE_T_FMT, shdr->sh_entsize);
+        set_errmsg("invalid " PLT_SECTION_NAME_FALLBACK " table entry size: %" SIZE_T_FMT, shdr->sh_entsize);
         rv = PLTHOOK_INVALID_FILE_FORMAT;
         goto error_exit;
     }
-    plthook->plt = (Elf_Plt_Rel *)(plthook->base + shdr->sh_addr);
-    plthook->plt_cnt = shdr->sh_size / sizeof(Elf_Plt_Rel);
+    plthook->dyn = (Elf_Plt_Rel *)(plthook->base + shdr->sh_addr);
+    plthook->dyn_cnt = shdr->sh_size / sizeof(Elf_Plt_Rel);
 
     *plthook_out = plthook;
     return 0;
@@ -477,6 +504,39 @@ int plthook_enum(plthook_t *plthook, unsigned int *pos, const char **name_out, v
             return 0;
         }
         (*pos)++;
+    }
+    while (*pos - plthook->plt_cnt < plthook->pltgot_cnt) {
+        char* plt_got_slot = (char*)(plthook->pltgot + (*pos - plthook->plt_cnt));
+        if (*(uint16_t*)plt_got_slot != 0x25ff) {
+            set_errmsg(".plt.got index %" SIZE_T_FMT " should be a jmpq instruction.", (*pos - plthook->plt_cnt));
+            return PLTHOOK_INVALID_FILE_FORMAT;
+        }
+        int32_t rip_relative_offset = *(int32_t*)(plt_got_slot + 2);
+        char* end_of_jmpq_inst = plt_got_slot + 6;
+        char* got_slot = end_of_jmpq_inst + rip_relative_offset;
+        // finally find what relocates this .got entry
+        for (size_t i = 0; i < plthook->dyn_cnt; i++) {
+            const Elf_Plt_Rel *plt = plthook->dyn + i;
+            if (ELF_R_TYPE(plt->r_info) == R_GLOBAL_DATA && plthook->base + plt->r_offset == got_slot) {
+                size_t idx = ELF_R_SYM(plt->r_info);
+    
+                if (idx >= plthook->dynsym_cnt) {
+                    set_errmsg(".dynsym index %" SIZE_T_FMT " should be less than %" SIZE_T_FMT ".", idx, plthook->dynsym_cnt);
+                    return PLTHOOK_INVALID_FILE_FORMAT;
+                }
+                idx = plthook->dynsym[idx].st_name;
+                if (idx + 1 > plthook->dynstr_size) {
+                    set_errmsg("too big section header string table index: %" SIZE_T_FMT, idx);
+                    return PLTHOOK_INVALID_FILE_FORMAT;
+                }
+                *name_out = plthook->dynstr + idx;
+                *addr_out = (void**)got_slot;
+                (*pos)++;
+                return 0;
+            }
+        }
+        set_errmsg("no relocation found for .got entry at %p in " PLT_SECTION_NAME_FALLBACK ".", got_slot);
+        return PLTHOOK_INVALID_FILE_FORMAT;
     }
     *name_out = NULL;
     *addr_out = NULL;
