@@ -486,7 +486,7 @@ int plthook_enum(plthook_t *plthook, unsigned int *pos, const char **name_out, v
 {
     while (*pos < plthook->plt_cnt) {
         const Elf_Plt_Rel *plt = plthook->plt + *pos;
-        if (ELF_R_TYPE(plt->r_info) == R_JUMP_SLOT || ELF_R_TYPE(plt->r_info) == R_GLOBAL_DATA) {
+        if (ELF_R_TYPE(plt->r_info) == R_JUMP_SLOT) {
             size_t idx = ELF_R_SYM(plt->r_info);
 
             if (idx >= plthook->dynsym_cnt) {
