@@ -36,7 +36,9 @@
 #if defined(__sun) && defined(_XOPEN_SOURCE) && !defined(__EXTENSIONS__)
 #define __EXTENSIONS__
 #endif
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -438,7 +440,7 @@ static int plthook_open_real(plthook_t **plthook_out, const char *base, const ch
         rv = PLTHOOK_INVALID_FILE_FORMAT;
         goto error_exit;
     }
-    plthook->pltgot = (const char*)(plthook->base + shdr->sh_addr);
+    plthook->pltgot = (const intptr_t*)(plthook->base + shdr->sh_addr);
     plthook->pltgot_cnt = shdr->sh_size / sizeof(intptr_t);
 
     rv = find_section(plthook, PLT_SECTION_NAME, &shdr);
