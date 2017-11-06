@@ -433,7 +433,9 @@ static int plthook_open_real(plthook_t **plthook_out, const char *base, const ch
 
     rv = find_section(plthook, ".plt.got", &shdr);
     if (rv != 0) {
-        goto error_exit;
+        plthook->pltgot = NULL;
+        plthook->pltgot_cnt = 0;
+        goto no_pltgot;
     }
     if ((shdr->sh_size & 7) != 0) {
         set_errmsg("invalid .plt.got table size: %" SIZE_T_FMT, shdr->sh_size);
@@ -443,6 +445,7 @@ static int plthook_open_real(plthook_t **plthook_out, const char *base, const ch
     plthook->pltgot = (const intptr_t*)(plthook->base + shdr->sh_addr);
     plthook->pltgot_cnt = shdr->sh_size / sizeof(intptr_t);
 
+no_pltgot:
     rv = find_section(plthook, PLT_SECTION_NAME, &shdr);
     if (rv != 0) {
         /*
